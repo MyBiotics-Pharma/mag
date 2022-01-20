@@ -86,6 +86,7 @@ include { CAT_DB_GENERATE                                     } from '../modules
 include { CAT                                                 } from '../modules/local/cat'                         addParams( options: modules['cat']                        )
 include { BIN_SUMMARY                                         } from '../modules/local/bin_summary'                 addParams( options: modules['bin_summary']                )
 include { MULTIQC                                             } from '../modules/local/multiqc'                     addParams( options: multiqc_options                       )
+include {EXPORTSHORT                                          } from '../modules/local/export_short_reads'          addParams( options: modules['exportreads']                )
 
 //
 // SUBWORKFLOW: Consisting of a mix of local and nf-core/modules
@@ -259,6 +260,10 @@ workflow MAG {
     }
 
     FASTQC_TRIMMED (
+        ch_short_reads
+    )
+
+    EXPORTSHORT(
         ch_short_reads
     )
 
