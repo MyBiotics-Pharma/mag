@@ -86,6 +86,7 @@ include { CAT_DB_GENERATE                                     } from '../modules
 include { CAT                                                 } from '../modules/local/cat'                         addParams( options: modules['cat']                        )
 include { BIN_SUMMARY                                         } from '../modules/local/bin_summary'                 addParams( options: modules['bin_summary']                )
 include { MULTIQC                                             } from '../modules/local/multiqc'                     addParams( options: multiqc_options                       )
+include {EXPORTSHORT                                          } from '../modules/local/export_short_reads'          addParams( options: modules['exportreads']                )
 
 //
 // SUBWORKFLOW: Consisting of a mix of local and nf-core/modules
@@ -107,6 +108,8 @@ include { GTDBTK              } from '../subworkflows/local/gtdbtk'             
 include { FASTQC as FASTQC_RAW     } from '../modules/nf-core/modules/fastqc/main'              addParams( options: modules['fastqc_raw']            )
 include { FASTQC as FASTQC_TRIMMED } from '../modules/nf-core/modules/fastqc/main'              addParams( options: modules['fastqc_trimmed']        )
 include { FASTP                    } from '../modules/nf-core/modules/fastp/main'               addParams( options: modules['fastp']                 )
+include { PRODIGAL                 } from '../modules/nf-core/modules/prodigal/main'            addParams( options: modules['prodigal']              )
+include { PROKKA                   } from '../modules/nf-core/modules/prokka/main'              addParams( options: modules['prokka']                )
 
 ////////////////////////////////////////////////////
 /* --  Create channel for reference databases  -- */
@@ -181,9 +184,10 @@ if (!params.keep_lambda) {
         .set { ch_nanolyse_db }
 }
 
-if (params.gtdb) {
+gtdb = params.skip_busco ? false : params.gtdb
+if (gtdb) {
     Channel
-        .value(file( "${params.gtdb}" ))
+        .value(file( "${gtdb}" ))
         .set { ch_gtdb }
 } else {
     ch_gtdb = Channel.empty()
@@ -256,6 +260,10 @@ workflow MAG {
     }
 
     FASTQC_TRIMMED (
+        ch_short_reads
+    )
+
+    EXPORTSHORT(
         ch_short_reads
     )
 
@@ -468,6 +476,20 @@ workflow MAG {
 
     /*
     ================================================================================
+                                    Predict proteins
+    ================================================================================
+    */
+
+    if (!params.skip_prodigal){
+        PRODIGAL (
+            ch_assemblies,
+            modules['prodigal']['output_format']
+        )
+        ch_software_versions = ch_software_versions.mix(PRODIGAL.out.versions.first().ifEmpty(null))
+    }
+
+    /*
+    ================================================================================
                                     Binning
     ================================================================================
     */
@@ -533,7 +555,7 @@ workflow MAG {
          * GTDB-tk: taxonomic classifications using GTDB reference
          */
         ch_gtdbtk_summary = Channel.empty()
-        if ( params.gtdb ){
+        if ( gtdb ){
             GTDBTK (
                 METABAT2_BINNING.out.bins,
                 ch_busco_summary,
@@ -543,13 +565,33 @@ workflow MAG {
             ch_gtdbtk_summary = GTDBTK.out.summary
         }
 
-        if (!params.skip_busco || !params.skip_quast || params.gtdb){
+        if (!params.skip_busco || !params.skip_quast || gtdb){
             BIN_SUMMARY (
                 METABAT2_BINNING.out.depths_summary,
                 ch_busco_summary.ifEmpty([]),
                 ch_quast_bins_summary.ifEmpty([]),
                 ch_gtdbtk_summary.ifEmpty([])
             )
+        }
+
+        /*
+         * Prokka: Genome annotation
+         */
+        METABAT2_BINNING.out.bins.transpose()
+            .map { meta, bin ->
+                def meta_new = meta.clone()
+                meta_new.id  = bin.getBaseName()
+                [ meta_new, bin ]
+            }
+            .set { ch_bins_for_prokka }
+
+        if (!params.skip_prokka){
+            PROKKA (
+                ch_bins_for_prokka,
+                [],
+                []
+            )
+            ch_software_versions = ch_software_versions.mix(PROKKA.out.versions.first().ifEmpty(null))
         }
     }
 
@@ -583,6 +625,7 @@ workflow MAG {
         ch_multiqc_files.collect(),
         ch_multiqc_custom_config.collect().ifEmpty([]),
         FASTQC_RAW.out.zip.collect{it[1]}.ifEmpty([]),
+        FASTP.out.json.collect{it[1]}.ifEmpty([]),
         FASTQC_TRIMMED.out.zip.collect{it[1]}.ifEmpty([]),
         ch_bowtie2_removal_host_multiqc.collect{it[1]}.ifEmpty([]),
         ch_quast_multiqc.collect().ifEmpty([]),
